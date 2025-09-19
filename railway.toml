@@ -12,7 +12,8 @@ CHROMA_DIR = "/data/chroma_db"
 LLM_MODEL  = "llama3.1:8b"
 EMBED_MODEL = "nomic-embed-text"
 # DNS interno hacia el otro servicio
-OLLAMA_HOST = "http://ollama.railway.internal:11434"
+OLLAMA_HOST = "http://ollama:11434"
+
 
 [[services.volumes]]
 name = "chroma-data"

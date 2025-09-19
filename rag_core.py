@@ -45,11 +45,12 @@ def _embed(texts: List[str]) -> List[List[float]]:
         try:
             r = _ollama.embeddings(model=EMBED_MODEL, prompt=t, options={"keep_alive": KEEP_ALIVE})
         except _OllamaResponseError as e:
-            if "not found" in str(e).lower():
-                _ollama.pull(model=EMBED_MODEL)  # descarga y reintenta
-                r = _ollama.embeddings(model=EMBED_MODEL, prompt=t, options={"keep_alive": KEEP_ALIVE})
-            else:
-                raise
+            # No hacer pull aquí; falla con mensaje claro
+            raise RuntimeError(
+                f"Embedding model '{EMBED_MODEL}' no está disponible en Ollama ({str(e)}). "
+                f"Precárgalo con: ollama pull {EMBED_MODEL}"
+            ) from e
+
         except _HttpxConnectError as e:
             raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
         vecs.append(r["embedding"])
@@ -62,11 +63,11 @@ def _embed_one(text: str) -> List[float]:
         r = _ollama.embeddings(model=EMBED_MODEL, prompt=text, options={"keep_alive": KEEP_ALIVE})
         return r["embedding"]
     except _OllamaResponseError as e:
-        if "not found" in str(e).lower():
-            _ollama.pull(model=EMBED_MODEL)
-            r = _ollama.embeddings(model=EMBED_MODEL, prompt=text, options={"keep_alive": KEEP_ALIVE})
-            return r["embedding"]
-        raise
+        raise RuntimeError(
+            f"Embedding model '{EMBED_MODEL}' no está disponible en Ollama ({str(e)}). "
+            f"Precárgalo con: ollama pull {EMBED_MODEL}"
+        ) from e
+
     except _HttpxConnectError as e:
         raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
 
