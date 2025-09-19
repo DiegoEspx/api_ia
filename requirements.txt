@@ -1,0 +1,17 @@
+# --- Web y framework ---
+fastapi==0.114.2
+uvicorn[standard]==0.30.6
+
+# --- Configuración y utilidades ---
+python-dotenv==1.0.1
+pydantic==2.9.2
+requests==2.32.3
+
+# --- PDF y archivos ---
+pypdf==4.3.1
+
+# --- RAG / Vector DB ---
+chromadb==0.5.5
+
+# --- Cliente para LLM y embeddings ---
+ollama==0.3.3
