@@ -2,24 +2,29 @@ from __future__ import annotations
 import os, sys
 from typing import Optional, List
 from io import BytesIO
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Path, Query
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Path, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pypdf import PdfReader
 import requests
 from dotenv import load_dotenv
 
+# Para importar rag_core desde este mismo directorio
 sys.path.insert(0, os.path.dirname(__file__))
 
 from rag_core import (
     upsert_document, generate_answer,
     delete_document, doc_stats, list_docs,
+    # Importamos estas para healthcheck y logs útiles
+    OLLAMA_HOST, _ollama, LLM_MODEL as RAG_LLM_MODEL, EMBED_MODEL as RAG_EMBED_MODEL
 )
 
 load_dotenv()
 
-LLM_MODEL = os.getenv("LLM_MODEL", "llama3.1")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
+# opcionalmente puedes seguir exponiendo estas
+LLM_MODEL = os.getenv("LLM_MODEL", RAG_LLM_MODEL)
+EMBED_MODEL = os.getenv("EMBED_MODEL", RAG_EMBED_MODEL)
 
 app = FastAPI(
     title="Rare Diseases Agent (stateless RAG)",
@@ -52,19 +57,38 @@ class ChatResponse(BaseModel):
 # ===== Health + Chat =====
 @app.get("/health")
 def health():
-    return {"status": "ok", "llm": LLM_MODEL, "embed": EMBED_MODEL}
+    """Healthcheck que también comprueba conectividad con Ollama."""
+    embeddings_ready = False
+    try:
+        # Ping ligero: lista de modelos (equivale a GET /api/tags)
+        _ = _ollama.list()
+        embeddings_ready = True
+    except Exception:
+        embeddings_ready = False
+
+    return {
+        "status": "ok",
+        "llm": LLM_MODEL,
+        "embed": EMBED_MODEL,
+        "ollama_host": OLLAMA_HOST,
+        "embeddings_ready": embeddings_ready,
+    }
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    reply, metas, citations_apa = generate_answer(
-        req.message,
-        screen_context=req.context or "",
-        topic=req.topic,
-        min_year=req.min_year,
-        types=req.types,
-        lang=req.lang,
-    )
-    return ChatResponse(reply=reply, citations=metas, citations_apa=citations_apa)
+    try:
+        reply, metas, citations_apa = generate_answer(
+            req.message,
+            screen_context=req.context or "",
+            topic=req.topic,
+            min_year=req.min_year,
+            types=req.types,
+            lang=req.lang,
+        )
+        return ChatResponse(reply=reply, citations=metas, citations_apa=citations_apa)
+    except RuntimeError as e:
+        # p.ej. cuando no hay conexión con Ollama -> 503 en vez de 500
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
 
 # ===== Ingesta =====
 @app.post("/ingest")
@@ -177,6 +201,8 @@ def delete_doc_route(
         return {"ok": True, "deleted": 0, "would_delete": stats["count"], "doc_id": doc_id}
     deleted = delete_document(doc_id)
     return {"ok": True, "deleted": deleted, "doc_id": doc_id}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=5001, reload=True)
+    port = int(os.getenv("PORT", "8000"))  # Usa el puerto inyectado por Railway
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=True)

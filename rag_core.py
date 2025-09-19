@@ -6,16 +6,23 @@ from chromadb.config import Settings
 from functools import lru_cache
 
 # ===== Config =====
-LLM_MODEL   = os.getenv("LLM_MODEL", "llama3.1")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-CHROMA_DIR  = os.getenv("CHROMA_DIR", "chroma_db")
-COLLECTION  = os.getenv("COLLECTION_NAME", "rare_diseases")
+LLM_MODEL    = os.getenv("LLM_MODEL", "llama3.1")
+EMBED_MODEL  = os.getenv("EMBED_MODEL", "nomic-embed-text")
+CHROMA_DIR   = os.getenv("CHROMA_DIR", "chroma_db")
+COLLECTION   = os.getenv("COLLECTION_NAME", "rare_diseases")
+OLLAMA_HOST  = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")  # <— lee host desde env
 
 _client = chromadb.PersistentClient(path=CHROMA_DIR, settings=Settings(allow_reset=True))
 _collection = _client.get_or_create_collection(
     name=COLLECTION,
     metadata={"hnsw:space": "cosine"},
 )
+
+# ===== Cliente Ollama explícito (usa OLLAMA_HOST) =====
+import ollama
+from httpx import ConnectError as _HttpxConnectError
+
+_ollama = ollama.Client(host=OLLAMA_HOST)
 
 # ===== Helpers =====
 def _chunk_text(text: str, chunk_size: int = 1100, overlap: int = 180) -> List[str]:
@@ -30,26 +37,31 @@ def _chunk_text(text: str, chunk_size: int = 1100, overlap: int = 180) -> List[s
     return chunks
 
 def _embed(texts: List[str]) -> List[List[float]]:
-    import ollama
     vecs: List[List[float]] = []
     for t in texts:
-        r = ollama.embeddings(
-            model=EMBED_MODEL,
-            prompt=t,
-            options={"keep_alive": "30m"}
-        )
-        vecs.append(r["embedding"])
+        try:
+            r = _ollama.embeddings(
+                model=EMBED_MODEL,
+                prompt=t,
+                options={"keep_alive": "30m"}
+            )
+            vecs.append(r["embedding"])
+        except _HttpxConnectError as e:
+            # Falla de conexión al servidor de embeddings
+            raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
     return vecs
 
 @lru_cache(maxsize=256)
 def _embed_one(text: str) -> List[float]:
-    import ollama
-    r = ollama.embeddings(
-        model=EMBED_MODEL,
-        prompt=text,
-        options={"keep_alive": "30m"}  # ⚡ cache + warm
-    )
-    return r["embedding"]
+    try:
+        r = _ollama.embeddings(
+            model=EMBED_MODEL,
+            prompt=text,
+            options={"keep_alive": "30m"}  # ⚡ cache + warm
+        )
+        return r["embedding"]
+    except _HttpxConnectError as e:
+        raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
 
 # --- Guardrails de dominio/tema ---
 _HEALTH_KEYWORDS = {
@@ -190,6 +202,7 @@ def generate_answer(
 
     if not rag_text:
         return ("No recuperé información suficiente para responder con calidad.", [], [])
+
     SYSTEM_PROMPT = """
                     Eres un asistente EDUCATIVO de salud, especializado en enfermedades raras.
                     Objetivo: ofrecer información general basada en evidencia (definiciones, síntomas/signos,
@@ -209,18 +222,22 @@ def generate_answer(
         {"role": "system", "content": SYSTEM_PROMPT.strip()},
         {"role": "user", "content": f"Pantalla: {screen_context or 'N/A'}\n{CONTEXT_BLOCK}\nPregunta: {user_msg}".strip()},
     ]
-    import ollama
-    out = ollama.chat(
-        model=LLM_MODEL,
-        messages=messages,
-        options={
-            "temperature": 0.2,
-            "num_predict": 220,
-            "top_p": 0.9,
-            "keep_alive": "30m",  # ⚡ evita cold start del LLM
-        }
-    )
-    reply = (out.get("message") or {}).get("content", "").strip()
+
+    try:
+        out = _ollama.chat(
+            model=LLM_MODEL,
+            messages=messages,
+            options={
+                "temperature": 0.2,
+                "num_predict": 220,
+                "top_p": 0.9,
+                "keep_alive": "30m",  # ⚡ evita cold start del LLM
+            }
+        )
+        reply = (out.get("message") or {}).get("content", "").strip()
+    except _HttpxConnectError as e:
+        raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
+
     citations_apa = format_apa6_list(metas)
     return reply or "No pude generar una respuesta en este momento.", metas, citations_apa
 
