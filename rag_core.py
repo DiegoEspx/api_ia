@@ -204,16 +204,10 @@ def generate_answer(
             options={"temperature": 0.2, "num_predict": 220, "top_p": 0.9, "keep_alive": KEEP_ALIVE}
         )
     except _OllamaResponseError as e:
-        if "not found" in str(e).lower():
-            _ollama.pull(model=LLM_MODEL)  # descarga si falta y reintenta
-            out = _ollama.chat(
-                model=LLM_MODEL, messages=messages,
-                options={"temperature": 0.2, "num_predict": 220, "top_p": 0.9, "keep_alive": KEEP_ALIVE}
-            )
-        else:
-            raise
-    except _HttpxConnectError as e:
-        raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
+        raise RuntimeError(
+            f"LLM '{LLM_MODEL}' no está disponible en Ollama ({str(e)}). "
+            f"Precárgalo con: ollama pull {LLM_MODEL}"
+        ) from e
 
     reply = (out.get("message") or {}).get("content", "").strip()
     citations_apa = format_apa6_list(metas)
