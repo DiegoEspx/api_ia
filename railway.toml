@@ -3,25 +3,32 @@ name = "rare-diseases-agent"
 
 # ---------- Servicio API ----------
 [[services]]
-name = "api"
+name  = "api"
 start = "python -m uvicorn server:app --host 0.0.0.0 --port $PORT"
-env = { PORT = "8080", CHROMA_DIR = "/data/chroma_db", LLM_MODEL = "llama3.1:8b", EMBED_MODEL = "nomic-embed-text" }
-# Ollama se comunicará con el API por red interna
-env.OLLAMA_HOST = "http://ollama.railway.internal:11434"
 
-# Volumen para persistir Chroma
+[services.env]
+PORT       = "8080"
+CHROMA_DIR = "/data/chroma_db"
+LLM_MODEL  = "llama3.1:8b"
+EMBED_MODEL = "nomic-embed-text"
+# DNS interno hacia el otro servicio
+OLLAMA_HOST = "http://ollama.railway.internal:11434"
+
 [[services.volumes]]
 name = "chroma-data"
 mountPath = "/data"
 
 # ---------- Servicio Ollama ----------
 [[services]]
-name = "ollama"
+name  = "ollama"
 image = "ollama/ollama:0.3.14"
 start = "bash -lc 'set -e; (sleep 2 && ollama pull ${LLM_MODEL:-llama3.1:8b} && ollama pull ${EMBED_MODEL:-nomic-embed-text}) & exec ollama serve'"
-env = { OLLAMA_KEEP_ALIVE = "30m", LLM_MODEL = "llama3.1:8b", EMBED_MODEL = "nomic-embed-text" }
 
-# Volumen para guardar modelos descargados
+[services.env]
+OLLAMA_KEEP_ALIVE = "30m"
+LLM_MODEL  = "llama3.1:8b"
+EMBED_MODEL = "nomic-embed-text"
+
 [[services.volumes]]
 name = "ollama-models"
 mountPath = "/root/.ollama"
