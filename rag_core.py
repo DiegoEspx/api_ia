@@ -43,7 +43,7 @@ def _embed(texts: List[str]) -> List[List[float]]:
     vecs: List[List[float]] = []
     for t in texts:
         try:
-            r = _ollama.embeddings(model=EMBED_MODEL, prompt=t, options={"keep_alive": KEEP_ALIVE})
+            r =_ollama.embeddings(model=EMBED_MODEL, prompt=t, keep_alive=KEEP_ALIVE)
         except _OllamaResponseError as e:
             # No hacer pull aquí; falla con mensaje claro
             raise RuntimeError(
@@ -60,7 +60,7 @@ def _embed(texts: List[str]) -> List[List[float]]:
 def _embed_one(text: str) -> List[float]:
     """Embed de un texto con cache + auto-pull si falta el modelo."""
     try:
-        r = _ollama.embeddings(model=EMBED_MODEL, prompt=text, options={"keep_alive": KEEP_ALIVE})
+        r = _ollama.embeddings(model=EMBED_MODEL, prompt=text, keep_alive=KEEP_ALIVE)
         return r["embedding"]
     except _OllamaResponseError as e:
         raise RuntimeError(
@@ -201,7 +201,8 @@ def generate_answer(
         out = _ollama.chat(
             model=LLM_MODEL,
             messages=messages,
-            options={"temperature": 0.2, "num_predict": 220, "top_p": 0.9, "keep_alive": KEEP_ALIVE}
+            options={"temperature": 0.2, "num_predict": 160, "top_p": 0.9, "num_ctx": 1024, "num_batch": 16},
+            keep_alive=KEEP_ALIVE
         )
     except _OllamaResponseError as e:
         raise RuntimeError(
