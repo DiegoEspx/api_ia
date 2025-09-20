@@ -6,7 +6,7 @@ from chromadb.config import Settings
 from functools import lru_cache
 
 # ===== Config =====
-LLM_MODEL    = os.getenv("LLM_MODEL", "phi3:mini-instruct")              # ligero por defecto
+LLM_MODEL    = os.getenv("LLM_MODEL", "phi3:mini-instruct")  # ligero por defecto
 EMBED_MODEL  = os.getenv("EMBED_MODEL", "nomic-embed-text")
 CHROMA_DIR   = os.getenv("CHROMA_DIR", "chroma_db")
 COLLECTION   = os.getenv("COLLECTION_NAME", "rare_diseases")
@@ -14,7 +14,12 @@ OLLAMA_HOST  = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 KEEP_ALIVE   = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 
 # ===== Chroma =====
-_client = chromadb.PersistentClient(path=CHROMA_DIR, settings=Settings(allow_reset=True))
+# Evita resets accidentales en producción. Actívalo solo si lo necesitas.
+_allow_reset = os.getenv("CHROMA_ALLOW_RESET", "false").lower() == "true"
+_client = chromadb.PersistentClient(
+    path=CHROMA_DIR,
+    settings=Settings(allow_reset=_allow_reset)
+)
 _collection = _client.get_or_create_collection(
     name=COLLECTION,
     metadata={"hnsw:space": "cosine"},
@@ -26,6 +31,24 @@ from httpx import ConnectError as _HttpxConnectError
 from ollama._types import ResponseError as _OllamaResponseError
 
 _ollama = ollama.Client(host=OLLAMA_HOST)
+
+# === Fallbacks de modelos (por si el primario no está disponible) ===
+_LLM_PREFERENCES = [
+    os.getenv("LLM_MODEL", "phi3:mini-instruct"),
+    "llama3.2:1b-instruct",
+    "tinyllama:latest",
+]
+
+def _choose_llm() -> str:
+    """Devuelve el primer modelo disponible según la preferencia."""
+    for m in _LLM_PREFERENCES:
+        try:
+            _ollama.show(m)
+            return m
+        except Exception:
+            continue
+    # si ninguno está, devolvemos el primero; el error se manejará arriba
+    return _LLM_PREFERENCES[0]
 
 # ===== Helpers =====
 def _chunk_text(text: str, chunk_size: int = 1100, overlap: int = 180) -> List[str]:
@@ -43,14 +66,13 @@ def _embed(texts: List[str]) -> List[List[float]]:
     vecs: List[List[float]] = []
     for t in texts:
         try:
-            r =_ollama.embeddings(model=EMBED_MODEL, prompt=t, keep_alive=KEEP_ALIVE)
+            r = _ollama.embeddings(model=EMBED_MODEL, prompt=t, keep_alive=KEEP_ALIVE)
         except _OllamaResponseError as e:
             # No hacer pull aquí; falla con mensaje claro
             raise RuntimeError(
                 f"Embedding model '{EMBED_MODEL}' no está disponible en Ollama ({str(e)}). "
                 f"Precárgalo con: ollama pull {EMBED_MODEL}"
             ) from e
-
         except _HttpxConnectError as e:
             raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
         vecs.append(r["embedding"])
@@ -67,7 +89,6 @@ def _embed_one(text: str) -> List[float]:
             f"Embedding model '{EMBED_MODEL}' no está disponible en Ollama ({str(e)}). "
             f"Precárgalo con: ollama pull {EMBED_MODEL}"
         ) from e
-
     except _HttpxConnectError as e:
         raise RuntimeError(f"No se pudo conectar a Ollama en {OLLAMA_HOST}") from e
 
@@ -80,7 +101,7 @@ _HEALTH_KEYWORDS = {
     "riesgo","epidemiología","epidemiologia","guía","guia","consenso","criterios","ICD","CIE"
 }
 _DISEASE_ALIASES = {
-    r"\bdown\b": "down",
+    r"\bdown\b": "down",  # <- lo dejamos tal cual (no se implementa la desambiguación explícita)
     r"\btrisom(ía|ia)?\s*21\b": "down",
     r"\bmucopolisacaridos(.*)?\b": "mps",
     r"\bmucopolisacaridosis\b": "mps",
@@ -130,18 +151,41 @@ def upsert_document(
     return len(chunks)
 
 def query_context(query: str, k: int = 5, where: dict | None = None) -> Tuple[str, List[Dict]]:
+    """Consulta y arma un contexto diverso (evita repetir el mismo doc_id muchas veces)."""
     qvec = _embed_one(query)
-    res = _collection.query(query_embeddings=[qvec], n_results=k, where=where)
+    # Pedimos más y luego filtramos diversidad por doc_id
+    res = _collection.query(query_embeddings=[qvec], n_results=max(k * 2, 10), where=where)
     docs  = res.get("documents", [[]])[0]
     metas = res.get("metadatas", [[]])[0]
-    ctx = ""
-    for i, (d, m) in enumerate(zip(docs, metas), start=1):
+
+    picked_docs: List[str] = []     # doc_ids ya usados
+    final_pairs: List[Tuple[str, Dict]] = []
+
+    for d, m in zip(docs, metas):
         m = m or {}
+        did = m.get("doc_id")
+        if did in picked_docs:
+            continue
+        if not d:
+            continue
+        picked_docs.append(did)
+        final_pairs.append((d, m))
+        if len(final_pairs) >= k:
+            break
+
+    if not final_pairs:
+        return "", []
+
+    ctx_lines = []
+    final_metas: List[Dict] = []
+    for i, (d, m) in enumerate(final_pairs, start=1):
         tag = f"{m.get('source','?')}"
         if m.get("year"): tag += f" {m['year']}"
         if m.get("type"): tag += f" · {m['type']}"
-        ctx += f"[{i}] ({tag}) {d}\n"
-    return ctx.strip(), metas
+        ctx_lines.append(f"[{i}] ({tag}) {d}")
+        final_metas.append(m)
+
+    return "\n".join(ctx_lines).strip(), final_metas
 
 def format_apa6_list(metas: List[Dict], limit: int = 4) -> List[str]:
     seen, apa_list = {}, []
@@ -167,8 +211,18 @@ def generate_answer(
     types: list[str] | None = None,
     lang: str | None = None,
 ) -> Tuple[str, List[Dict], List[str]]:
+    # Filtro de dominio
     if not _is_health_related(user_msg) and topic is None:
-        return ("Me centro exclusivamente en temas médicos (en especial enfermedades raras). Tu consulta parece ser de otro ámbito.", [], [])
+        return (
+            "Me centro exclusivamente en temas médicos (en especial enfermedades raras). "
+            "Tu consulta parece ser de otro ámbito.", [], []
+        )
+
+    # Suaviza malentendidos con 'down' solo si hay señales médicas (no desambiguación explícita)
+    t = user_msg.lower()
+    if re.search(r"\bdown\b", t) and any(w in t for w in ["síndrome","sindrome","trisom","cromosom","21"]):
+        topic = topic or "down"
+
     inferred = _extract_topic(user_msg)
     effective_topic = topic or inferred
     where = _compose_where(topic=effective_topic, lang=lang, min_year=min_year, types=types)
@@ -178,39 +232,42 @@ def generate_answer(
         return ("No recuperé información suficiente para responder con calidad.", [], [])
 
     SYSTEM_PROMPT = """
-    Eres un asistente EDUCATIVO de salud, especializado en enfermedades raras.
-    Objetivo: ofrecer información general basada en evidencia (definiciones, síntomas/signos,
-    causas, pruebas diagnósticas a alto nivel y opciones de manejo generales), sin dar
-    diagnósticos personalizados ni dosis de medicamentos.
-    Reglas:
-    - Responde SIEMPRE en español, claro y conciso (4-8 oraciones).
-    - SÍ puedes enumerar síntomas y signos cuando te lo pidan.
-    - Evita frases como “no puedo proporcionar asistencia médica directa”.
-      En su lugar, da información general segura y una breve advertencia si procede.
-    - No sustituyes a un profesional; incluye señales de alarma cuando sea pertinente.
-    """
+Eres un asistente EDUCATIVO de salud, especializado en enfermedades raras.
+Objetivo: ofrecer información general basada en evidencia (definiciones, síntomas/signos,
+causas, pruebas diagnósticas a alto nivel y opciones de manejo generales), sin dar
+diagnósticos personalizados ni dosis de medicamentos.
 
-    topic_line = f"Tópico: {effective_topic}\n" if effective_topic else ""
-    CONTEXT_BLOCK = topic_line + f"Contexto recuperado:\n{rag_text}\n"
+Instrucciones de estilo:
+- Responde SIEMPRE en español, en 4-8 oraciones, claro y conciso.
+- Puedes enumerar síntomas y signos cuando corresponda.
+- Evita frases del tipo “no puedo proporcionar asistencia médica directa”.
+  En su lugar, brinda información segura y, si aplica, una breve advertencia.
+- No sustituyes a un profesional; incluye señales de alarma cuando sea pertinente.
+- No repitas ni menciones literalmente el “contexto” o sus etiquetas.
+""".strip()
+
+    # El contexto se entrega como system "silencioso" para mayor obediencia
+    topic_line = f"Tópico sugerido: {effective_topic}\n" if effective_topic else ""
+    context_block = f"{topic_line}Fuentes recuperadas (extractos):\n{rag_text}"
+
     messages = [
-    {
-        "role": "system",
-        "content": (
-            SYSTEM_PROMPT.strip()
-            + "\n\nInstrucciones:"
-            + "\n- No repitas literal el bloque de contexto ni las palabras 'Pantalla', 'Tópico' o 'Contexto recuperado'."
-            + "\n- Responde en español, claro y conciso (4–8 oraciones), corrigiendo ortografía."
-        )
-    },
-    {"role": "system", "content": f"<context>\n{rag_text}\n</context>"},
-    {"role": "user", "content": user_msg},
-]
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": context_block},
+        {"role": "user", "content": user_msg.strip()},
+    ]
 
     try:
+        model_to_use = _choose_llm()
         out = _ollama.chat(
-            model=LLM_MODEL,
+            model=model_to_use,
             messages=messages,
-            options={"temperature": 0.15, "num_predict": 140, "num_ctx": 1024, "num_batch": 16, "top_p": 0.9},
+            options={
+                "temperature": 0.15,
+                "num_predict": 160,   # un poco más corto para RAM/latencia
+                "num_ctx": 1024,      # baja si ves OOM (p.ej., 768)
+                "num_batch": 16,
+                "top_p": 0.9,
+            },
             keep_alive=KEEP_ALIVE
         )
     except _OllamaResponseError as e:
