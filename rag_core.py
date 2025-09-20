@@ -193,15 +193,24 @@ def generate_answer(
     topic_line = f"Tópico: {effective_topic}\n" if effective_topic else ""
     CONTEXT_BLOCK = topic_line + f"Contexto recuperado:\n{rag_text}\n"
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT.strip()},
-        {"role": "user", "content": f"Pantalla: {screen_context or 'N/A'}\n{CONTEXT_BLOCK}\nPregunta: {user_msg}".strip()},
-    ]
+    {
+        "role": "system",
+        "content": (
+            SYSTEM_PROMPT.strip()
+            + "\n\nInstrucciones:"
+            + "\n- No repitas literal el bloque de contexto ni las palabras 'Pantalla', 'Tópico' o 'Contexto recuperado'."
+            + "\n- Responde en español, claro y conciso (4–8 oraciones), corrigiendo ortografía."
+        )
+    },
+    {"role": "system", "content": f"<context>\n{rag_text}\n</context>"},
+    {"role": "user", "content": user_msg},
+]
 
     try:
         out = _ollama.chat(
             model=LLM_MODEL,
             messages=messages,
-            options={"temperature": 0.2, "num_predict": 160, "top_p": 0.9, "num_ctx": 1024, "num_batch": 16},
+            options={"temperature": 0.15, "num_predict": 140, "num_ctx": 1024, "num_batch": 16, "top_p": 0.9},
             keep_alive=KEEP_ALIVE
         )
     except _OllamaResponseError as e:
