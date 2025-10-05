@@ -234,18 +234,26 @@ def _list_folder(path: str) -> list[str]:
     """Lista SOLO el nivel de 'path' (archivos), sin recursión profunda."""
     if _supa is None:
         return []
-    items = _supa.storage.from_(SUPABASE_BUCKET).list(
-        path=path.strip("/"),
-        limit=1000,
-        offset=0,
-        sortBy={"column": "name", "order": "asc"},
-    ) or []
+    rel = path.strip("/")
+    try:
+        # SDK v2: path, options
+        items = _supa.storage.from_(SUPABASE_BUCKET).list(
+            rel,
+            {"limit": 1000, "offset": 0, "sortBy": {"column": "name", "order": "asc"}},
+        ) or []
+    except TypeError:
+        # Fallback: algunas versiones solo aceptan el path
+        items = _supa.storage.from_(SUPABASE_BUCKET).list(rel) or []
+
     out = []
     for it in items:
         name = it.get("name", "")
-        if name and not name.endswith("/"):
-            out.append(f"{path.strip('/')}/{name}".strip("/"))
+        # En v2, las carpetas suelen venir con metadata=None
+        is_file = bool(it.get("metadata")) or (name and not name.endswith("/"))
+        if name and is_file:
+            out.append(f"{rel}/{name}".strip("/"))
     return out
+
 
 def _list_storage_paths(prefix: Optional[str] = None) -> list[str]:
     """
@@ -270,7 +278,7 @@ def _signed_url(path: str, expires: int = 600) -> str:
     if _supa is None:
         raise HTTPException(status_code=500, detail="Supabase no configurado en backend.")
     data = _supa.storage.from_(SUPABASE_BUCKET).create_signed_url(path, expires) or {}
-    url = data.get("signedUrl") or data.get("signedURL") or data.get("signed_url")
+    url = data.get("signed_url") or data.get("signedURL") or data.get("signedUrl")
     if not url:
         raise HTTPException(status_code=500, detail=f"No se pudo firmar URL para {path}")
     return url
