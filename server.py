@@ -9,6 +9,9 @@ from pydantic import BaseModel
 from pypdf import PdfReader
 import requests
 from dotenv import load_dotenv
+import threading
+import logging
+logger = logging.getLogger("uvicorn.error")
 
 # Para importar rag_core desde este mismo directorio
 sys.path.insert(0, os.path.dirname(__file__))
@@ -177,7 +180,14 @@ def ingest_url(req: dict):
         topic=req.get("topic"),
         extra_meta=extra
     )
-    return {"ok": True, "chunks_indexed": count, "doc_id": name, "source": req.get("source") or f"url:{req['url']}", "topic": req.get("topic"), **extra}
+    return {
+        "ok": True,
+        "chunks_indexed": count,
+        "doc_id": name,
+        "source": req.get("source") or f"url:{req['url']}",
+        "topic": req.get("topic"),
+        **extra
+    }
 
 # ===== Admin =====
 @app.get("/docs")
@@ -202,6 +212,130 @@ def delete_doc_route(
     deleted = delete_document(doc_id)
     return {"ok": True, "deleted": deleted, "doc_id": doc_id}
 
+# --- Supabase client + sync desde Storage ---
+from supabase import create_client, Client
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "docs")
+
+_supa: Client | None = None
+if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    _supa = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+def _infer_topic_from_path(path: str) -> str | None:
+    p = path.lower()
+    if "/mps/" in p or p.startswith("mps/"): return "mps"
+    if "/williams/" in p or p.startswith("williams/"): return "williams"
+    if "/down/" in p or p.startswith("down/"): return "down"
+    return None
+
+def _list_folder(path: str) -> list[str]:
+    """Lista SOLO el nivel de 'path' (archivos), sin recursión profunda."""
+    if _supa is None:
+        return []
+    items = _supa.storage.from_(SUPABASE_BUCKET).list(
+        path=path.strip("/"),
+        limit=1000,
+        offset=0,
+        sortBy={"column": "name", "order": "asc"},
+    ) or []
+    out = []
+    for it in items:
+        name = it.get("name", "")
+        if name and not name.endswith("/"):
+            out.append(f"{path.strip('/')}/{name}".strip("/"))
+    return out
+
+def _list_storage_paths(prefix: Optional[str] = None) -> list[str]:
+    """
+    Lista archivos del bucket. Para tu estructura actual:
+    - si prefix está vacío → lista mps/, williams/, down/ y raíz
+    - si prefix = 'mps' | 'williams' | 'down' → lista solo esa carpeta
+    """
+    if _supa is None:
+        raise HTTPException(status_code=500, detail="Supabase no configurado en backend.")
+
+    if prefix:
+        return _list_folder(prefix)
+
+    paths = []
+    for folder in ("mps", "williams", "down"):
+        paths.extend(_list_folder(folder))
+    # por si hubiera archivos en el root del bucket:
+    paths.extend(_list_folder(""))
+    return sorted(set(paths))
+
+def _signed_url(path: str, expires: int = 600) -> str:
+    if _supa is None:
+        raise HTTPException(status_code=500, detail="Supabase no configurado en backend.")
+    data = _supa.storage.from_(SUPABASE_BUCKET).create_signed_url(path, expires) or {}
+    url = data.get("signedUrl") or data.get("signedURL") or data.get("signed_url")
+    if not url:
+        raise HTTPException(status_code=500, detail=f"No se pudo firmar URL para {path}")
+    return url
+
+def _ingest_signed_url(url: str, doc_id: str, source: str, topic: str | None):
+    """Reusa tu /ingest_url sin hacer solicitud HTTP separada."""
+    req = {
+        "url": url,
+        "doc_id": doc_id,
+        "source": source,
+        "topic": topic,
+        "type": "guia",
+        "lang": "es",
+        "year": 2025
+    }
+    return ingest_url(req)
+
+@app.post("/sync_supabase")
+def sync_supabase(prefix: Optional[str] = None):
+    """
+    Indexa en Chroma TODO lo que haya en Supabase Storage (bucket=docs).
+    - Query param 'prefix' opcional: 'mps', 'williams' o 'down'
+    """
+    if _supa is None:
+        raise HTTPException(status_code=500, detail="SUPABASE_URL/SERVICE_ROLE_KEY no configurados.")
+
+    paths = _list_storage_paths(prefix)
+    if not paths:
+        return {"ok": True, "processed": 0, "paths": []}
+
+    results = []
+    for path in paths:
+        try:
+            url = _signed_url(path, 600)
+            topic = _infer_topic_from_path(path)
+            doc_id = path.replace("/", "_")                 # estable y simple
+            source = f"supabase:{SUPABASE_BUCKET}/{path}"   # trazabilidad
+            out = _ingest_signed_url(url, doc_id, source, topic)
+            results.append({"path": path, "ok": True, "chunks": out.get("chunks_indexed", 0)})
+        except Exception as e:
+            results.append({"path": path, "ok": False, "error": str(e)})
+
+    total = sum(r.get("chunks", 0) for r in results if r.get("ok"))
+    return {"ok": True, "processed": len(paths), "total_chunks": total, "details": results}
+
+@app.on_event("startup")
+def _kickoff_initial_sync():
+    # Activa con AUTO_SYNC_ON_STARTUP=true en tus variables de entorno (Railway)
+    if os.getenv("AUTO_SYNC_ON_STARTUP", "false").lower() != "true":
+        logger.info("[sync] AUTO_SYNC_ON_STARTUP=false -> no se hará sync al iniciar.")
+        return
+
+    def _run():
+        try:
+            logger.info("[sync] Iniciando sync_supabase al arrancar…")
+            # None = todo el bucket; o cambia a "williams"/"mps"/"down" si quieres acotar
+            sync_supabase(prefix=None)
+            logger.info("[sync] Sync_supabase finalizado.")
+        except Exception as e:
+            logger.exception(f"[sync] Error en sync_supabase: {e}")
+
+    # Hilo en background para no bloquear el arranque del servidor
+    threading.Thread(target=_run, daemon=True).start()
+
+# ===== Arranque local (opcional) =====
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))  # Usa el puerto inyectado por Railway
