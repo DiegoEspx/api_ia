@@ -253,15 +253,15 @@ def generate_answer(
     responde la DEFINICIÓN CLÍNICA de X. Nunca describas archivos, carpetas, documentos o rutas.
 
     Estilo y restricciones:
-    - Responde SIEMPRE en español, claro y conciso (4–8 oraciones).
+    - Responde SIEMPRE en español, claro y conciso (4-8 oraciones).
     - Tono neutral y docente; no uses “podemos”, “nuestras fuentes”, “contáctanos” ni frases comerciales.
     - No menciones ni repitas literalmente el bloque de contexto ni etiquetas como “contexto/pantalla/tópico”.
 
     Plantilla de salida (usa títulos cortos y viñetas cuando aplique):
-    - Definición breve (1–2 oraciones).
-    - Causas/genética (1–2 oraciones).
-    - Manifestaciones frecuentes (3–6 viñetas compactas).
-    - Diagnóstico a alto nivel (1–2 oraciones).
+    - Definición breve (1-2 oraciones).
+    - Causas/genética (1-2 oraciones).
+    - Manifestaciones frecuentes (3-6 viñetas compactas).
+    - Diagnóstico a alto nivel (1-2 oraciones).
     - Acompañamiento/alertas (1 oración con señales de alarma o derivación).
     """.strip()
 
@@ -349,6 +349,8 @@ def _compose_where(
     if min_year is not None: parts.append({"year": {"$gte": min_year}})
     if types: parts.append({"type": {"$in": types}})
     if doc_id: parts.append({"doc_id": {"$eq": doc_id}})
-    if not parts: return None
-    if len(parts) == 1: return parts[0]
+    if not parts: 
+        return None
+    if len(parts) == 1: 
+        return parts[0]
     return {"$and": parts}
