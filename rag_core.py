@@ -167,11 +167,12 @@ def query_context(query: str, k: int = 5, where: dict | None = None) -> Tuple[st
 
     ctx_lines, final_metas = [], []
     for i, (d, m) in enumerate(final_pairs, start=1):
-        tag = f"{m.get('source','?')}"
-        if m.get("year"): tag += f" {m['year']}"
-        if m.get("type"): tag += f" · {m['type']}"
-        ctx_lines.append(f"[{i}] ({tag}) {d}")
+        title = (m.get("title") or m.get("doc_id") or "").strip()
+# Si quieres el título visible, usa la línea comentada:
+# ctx_lines.append(f"[{i}] ({title}) {d}")
+        ctx_lines.append(f"[{i}] {d}")  # sin rutas para evitar sesgos
         final_metas.append(m)
+
     return "\n".join(ctx_lines).strip(), final_metas
 
 def format_apa6_list(metas: List[Dict], limit: int = 4) -> List[str]:
@@ -230,9 +231,8 @@ def generate_answer(
     if not _is_health_related(user_msg) and topic is None:
         return ("Me centro exclusivamente en temas médicos (en especial enfermedades raras). Tu consulta parece ser de otro ámbito.", [], [])
 
-    # Si aparece "down" junto con claves médicas, inclinamos el filtro (sin desambiguación forzada)
     t = user_msg.lower()
-    if re.search(r"\bdown\b", t) and any(w in t for w in ["síndrome","sindrome","trisom","cromosom","21"]):
+    if re.search(r"\bdown\b", t):
         topic = topic or "down"
 
     inferred = _extract_topic(user_msg)
@@ -244,24 +244,27 @@ def generate_answer(
         return ("No recuperé información suficiente para responder con calidad.", [], [])
 
     SYSTEM_PROMPT = """
-Eres un asistente EDUCATIVO de salud, especializado en enfermedades raras.
-Objetivo: ofrecer información general basada en evidencia (definiciones, síntomas/signos,
-causas, pruebas diagnósticas a alto nivel y opciones de manejo generales), sin dar
-diagnósticos personalizados ni dosis de medicamentos.
+    Eres un asistente EDUCATIVO de salud, especializado en enfermedades raras.
+    Objetivo: ofrecer información general basada en evidencia (definiciones, síntomas/signos,
+    causas, pruebas diagnósticas a alto nivel y opciones de manejo generales), sin dar
+    diagnósticos personalizados ni dosis de medicamentos.
 
-Estilo y restricciones:
-- Responde SIEMPRE en español, claro y conciso (4–8 oraciones).
-- Tono neutral y docente; NUNCA uses “podemos”, “nuestras fuentes”, “contáctanos” ni promesas de servicio.
-- No incluyas llamadas a contacto ni frases comerciales.
-- No menciones ni repitas literalmente el bloque de contexto ni etiquetas como “contexto”, “pantalla” o “tópico”.
+    Regla clave: si el usuario pregunta “¿qué es X?” y X coincide con una ENFERMEDAD,
+    responde la DEFINICIÓN CLÍNICA de X. Nunca describas archivos, carpetas, documentos o rutas.
 
-Plantilla de salida (usa títulos cortos y viñetas cuando aplique):
-- Definición breve (1–2 oraciones).
-- Causas/genética (1–2 oraciones).
-- Manifestaciones frecuentes (3–6 viñetas compactas).
-- Diagnóstico a alto nivel (1–2 oraciones).
-- Acompañamiento/alertas (1 oración con señales de alarma o derivación).
-""".strip()
+    Estilo y restricciones:
+    - Responde SIEMPRE en español, claro y conciso (4–8 oraciones).
+    - Tono neutral y docente; no uses “podemos”, “nuestras fuentes”, “contáctanos” ni frases comerciales.
+    - No menciones ni repitas literalmente el bloque de contexto ni etiquetas como “contexto/pantalla/tópico”.
+
+    Plantilla de salida (usa títulos cortos y viñetas cuando aplique):
+    - Definición breve (1–2 oraciones).
+    - Causas/genética (1–2 oraciones).
+    - Manifestaciones frecuentes (3–6 viñetas compactas).
+    - Diagnóstico a alto nivel (1–2 oraciones).
+    - Acompañamiento/alertas (1 oración con señales de alarma o derivación).
+    """.strip()
+
 
     topic_line = f"Tópico sugerido: {effective_topic}\n" if effective_topic else ""
     context_block = f"{topic_line}Fuentes recuperadas (extractos):\n{rag_text}"
