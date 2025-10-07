@@ -263,6 +263,7 @@ def generate_answer(
     - Manifestaciones frecuentes (3-6 viñetas compactas).
     - Diagnóstico a alto nivel (1-2 oraciones).
     - Acompañamiento/alertas (1 oración con señales de alarma o derivación).
+    Cierra SIEMPRE la última oración; no dejes frases a medias.
     """.strip()
 
 
@@ -282,10 +283,12 @@ def generate_answer(
             messages=messages,
             options={
                 "temperature": 0.10,
-                "num_predict": 140,
-                "num_ctx": 1024,
-                "num_batch": 16,
+                "num_predict": 280,
+                "num_ctx": 2000,
+                "num_batch": 20,
                 "top_p": 0.9,
+                "mirostat": 0, 
+                "stop": ["\n\n", "\nFuentes", "\nReferencias"]
             },
             keep_alive=KEEP_ALIVE
         )
