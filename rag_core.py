@@ -282,8 +282,8 @@ def generate_answer(
             messages=messages,
             options={
                 "temperature": 0.10,
-                "num_predict": 280,
-                "num_ctx": 2024,
+                "num_predict": 140,
+                "num_ctx": 1024,
                 "num_batch": 16,
                 "top_p": 0.9,
             },
@@ -349,8 +349,6 @@ def _compose_where(
     if min_year is not None: parts.append({"year": {"$gte": min_year}})
     if types: parts.append({"type": {"$in": types}})
     if doc_id: parts.append({"doc_id": {"$eq": doc_id}})
-    if not parts: 
-        return None
-    if len(parts) == 1: 
-        return parts[0]
+    if not parts: return None
+    if len(parts) == 1: return parts[0]
     return {"$and": parts}
