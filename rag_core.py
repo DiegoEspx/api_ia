@@ -282,14 +282,16 @@ def generate_answer(
             model=model_to_use,
             messages=messages,
             options={
-                "temperature": 0.10,
-                "num_predict": 280,
-                "num_ctx": 2000,
-                "num_batch": 20,
-                "top_p": 0.9,
-                "mirostat": 0, 
-                "stop": ["\n\n", "\nFuentes", "\nReferencias"]
-            },
+                    "temperature": 0.10,
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "repeat_penalty": 1.1,
+                    "num_predict": 512,
+                    "num_ctx": 2000,
+                    "num_batch": 20,
+                    "mirostat": 0,
+                    "stop": ["\nFuentes", "\nReferencias"]   # <- sin "\n\n"
+                },
             keep_alive=KEEP_ALIVE
         )
     except _OllamaResponseError as e:
@@ -354,6 +356,6 @@ def _compose_where(
     if doc_id: parts.append({"doc_id": {"$eq": doc_id}})
     if not parts: 
         return None
-    if len(parts) == 1: 
+    if len(parts) == 1:
         return parts[0]
     return {"$and": parts}
